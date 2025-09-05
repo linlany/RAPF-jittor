@@ -1,4 +1,5 @@
-continuum
+# continuum
+jittor
 hydra-core==1.2.0
 numpy
 oauthlib==3.2.1
