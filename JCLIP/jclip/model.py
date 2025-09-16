@@ -41,10 +41,10 @@ class MLP(nn.Module):
 
 class ResidualAttentionBlock(nn.Module):
 
-    def __init__(self, d_model, n_head, attn_mask):
+    def __init__(self, d_model, n_head, attn_mask, lora_q_r=0, lora_k_r=0, lora_v_r=0, lora_alpha=1.0):
         super().__init__()
 
-        self.attn = MultiheadAttention(d_model, n_head)
+        self.attn = MultiheadAttention(d_model, n_head, lora_q_r=lora_q_r, lora_k_r=lora_k_r, lora_v_r=lora_v_r, lora_alpha=lora_alpha)
         self.ln_1 = LayerNorm(d_model)
         self.mlp = MLP(d_model)
         self.ln_2 = LayerNorm(d_model)
@@ -64,12 +64,12 @@ class ResidualAttentionBlock(nn.Module):
 
 class Transformer(nn.Module):
 
-    def __init__(self, width, layers, heads, attn_mask=None):
+    def __init__(self, width, layers, heads, attn_mask=None, lora_q_r=0, lora_k_r=0, lora_v_r=0, lora_alpha=1.0):
         super().__init__()
         self.width = width
         self.layers = layers
         self.resblocks = nn.Sequential(*[
-            ResidualAttentionBlock(width, heads, attn_mask)
+            ResidualAttentionBlock(width, heads, attn_mask, lora_q_r, lora_k_r, lora_v_r, lora_alpha)
             for _ in range(layers)
         ])
 
@@ -80,7 +80,8 @@ class Transformer(nn.Module):
 class VisionTransformer(nn.Module):
 
     def __init__(self, input_resolution: int, patch_size: int, width: int,
-                 layers: int, heads: int, output_dim: int):
+                 layers: int, heads: int, output_dim: int,
+                 lora_q_r=0, lora_k_r=0, lora_v_r=0, lora_alpha=1.0):
         super().__init__()
         self.input_resolution = input_resolution
         self.output_dim = output_dim
@@ -96,7 +97,11 @@ class VisionTransformer(nn.Module):
             ((input_resolution // patch_size)**2 + 1, width))
         self.ln_pre = LayerNorm(width)
 
-        self.transformer = Transformer(width, layers, heads)
+        self.transformer = Transformer(width, layers, heads,
+                                       lora_q_r=lora_q_r,
+                                       lora_k_r=lora_k_r,
+                                       lora_v_r=lora_v_r,
+                                       lora_alpha=lora_alpha)
 
         self.ln_post = LayerNorm(width)
         self.proj = scale * jt.randn((width, output_dim))
@@ -141,7 +146,12 @@ class CLIP(nn.Module):
             vocab_size: int,
             transformer_width: int,
             transformer_heads: int,
-            transformer_layers: int):
+            transformer_layers: int,
+            # LoRA
+            lora_q_r=0,
+            lora_k_r=0,
+            lora_v_r=0,
+            lora_alpha=1.0):
         super().__init__()
 
         self.context_length = context_length
@@ -152,12 +162,20 @@ class CLIP(nn.Module):
                                         width=vision_width,
                                         layers=vision_layers,
                                         heads=vision_heads,
-                                        output_dim=embed_dim)
+                                        output_dim=embed_dim,
+                                        lora_q_r=lora_q_r,
+                                        lora_k_r=lora_k_r,
+                                        lora_v_r=lora_v_r,
+                                        lora_alpha=lora_alpha)
 
         self.transformer = Transformer(width=transformer_width,
                                        layers=transformer_layers,
                                        heads=transformer_heads,
-                                       attn_mask=self.build_attention_mask())
+                                       attn_mask=self.build_attention_mask(),
+                                       lora_q_r=lora_q_r,
+                                       lora_k_r=lora_k_r,
+                                       lora_v_r=lora_v_r,
+                                       lora_alpha=lora_alpha)
 
         self.vocab_size = vocab_size
         self.token_embedding = nn.Embedding(vocab_size, transformer_width)
@@ -215,7 +233,7 @@ class CLIP(nn.Module):
               text.argmax(dim=-1)[0]] @ self.text_projection
         return x
 
-    def execute(self, image, text):
+    def execute(self, image, text, return_feature=False):
         image_features = self.encode_image(image)
         text_features = self.encode_text(text)
 
@@ -228,12 +246,14 @@ class CLIP(nn.Module):
         logit_scale = self.logit_scale.exp()
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logits_per_image.t()
+        if return_feature:
+            return logits_per_image, logits_per_text, image_features, text_features
 
         # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
 
 
-def build_model(state_dict: dict):
+def build_model(state_dict: dict, lora_q_r=0, lora_k_r=0, lora_v_r=0, lora_alpha=1.0):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -276,7 +296,8 @@ def build_model(state_dict: dict):
 
     model = CLIP(embed_dim, image_resolution, vision_layers, vision_width,
                  vision_patch_size, context_length, vocab_size,
-                 transformer_width, transformer_heads, transformer_layers)
+                 transformer_width, transformer_heads, transformer_layers,
+                 lora_q_r=lora_q_r, lora_k_r=lora_k_r, lora_v_r=lora_v_r, lora_alpha=lora_alpha)
 
     for key in ["input_resolution", "context_length", "vocab_size"]:
         if key in state_dict:

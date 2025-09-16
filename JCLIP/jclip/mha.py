@@ -224,6 +224,15 @@ def multi_head_attention_forward(
     static_v: Optional[Var] = None,
     average_attn_weights: bool = True,
     is_causal: bool = False,
+    lora_q: Optional[Linear] = None,
+    lora_q_proj: Optional[Linear] = None,
+    lora_k: Optional[Linear] = None,
+    lora_k_proj: Optional[Linear] = None,
+    lora_v: Optional[Linear] = None,
+    lora_v_proj: Optional[Linear] = None,
+    lora_q_scaling: float = 1.0,
+    lora_k_scaling: float = 1.0,
+    lora_v_scaling: float = 1.0,
 ) -> Tuple[Var, Optional[Var]]:
 
     is_batched = _mha_shape_check(query, key, value, key_padding_mask,
@@ -309,6 +318,22 @@ def multi_head_attention_forward(
             b_q, b_k, b_v = in_proj_bias.chunk(3)
         q, k, v = _in_projection(query, key, value, q_proj_weight,
                                  k_proj_weight, v_proj_weight, b_q, b_k, b_v)
+
+    # Apply LoRA to the query if enabled
+    if lora_q is not None and lora_q_proj is not None:
+        lora_query = lora_q(query)
+        lora_query = lora_q_proj(lora_query) * lora_q_scaling
+        q = q + lora_query
+
+    if lora_k is not None and lora_k_proj is not None:
+        lora_key = lora_k(key)
+        lora_key = lora_k_proj(lora_key) * lora_k_scaling
+        k = k + lora_key
+
+    if lora_v is not None and lora_v_proj is not None:
+        lora_value = lora_v(value)
+        lora_value = lora_v_proj(lora_value) * lora_v_scaling
+        v = v + lora_value
 
     # prep attention mask
 
@@ -481,7 +506,11 @@ class MultiheadAttention(Module):
                  kdim=None,
                  vdim=None,
                  batch_first=False,
-                 dtype=jt.float32) -> None:
+                 dtype=jt.float32,
+                 lora_q_r=0,  # LoRA rank for query
+                 lora_k_r=0,  # LoRA rank for key
+                 lora_v_r=0,  # LoRA rank for value
+                 lora_alpha=1.0) -> None:
         if embed_dim <= 0 or num_heads <= 0:
             raise ValueError(
                 f"embed_dim and num_heads must be greater than 0,"
@@ -528,6 +557,41 @@ class MultiheadAttention(Module):
             self.bias_k = self.bias_v = None
 
         self.add_zero_attn = add_zero_attn
+
+        self.lora_q_r = lora_q_r
+        self.lora_k_r = lora_k_r
+        self.lora_v_r = lora_v_r
+        self.lora_alpha = lora_alpha
+
+        if lora_q_r > 0:
+            self.lora_q = Linear(embed_dim, lora_q_r, bias=False)
+            self.lora_q_proj = Linear(lora_q_r, embed_dim, bias=False)
+            self.lora_q_proj.weight.zero_()  # 初始化为0
+            self.lora_q_scaling = lora_alpha
+        else:
+            self.lora_q = None
+            self.lora_q_proj = None
+            self.lora_q_scaling = 1.0
+
+        if lora_k_r > 0:
+            self.lora_k = Linear(embed_dim, lora_k_r, bias=False)
+            self.lora_k_proj = Linear(lora_k_r, embed_dim, bias=False)
+            self.lora_k_proj.weight.zero_()  # 初始化为0
+            self.lora_k_scaling = lora_alpha
+        else:
+            self.lora_k = None
+            self.lora_k_proj = None
+            self.lora_k_scaling = 1.0
+
+        if lora_v_r > 0:
+            self.lora_v = Linear(embed_dim, lora_v_r, bias=False)
+            self.lora_v_proj = Linear(lora_v_r, embed_dim, bias=False)
+            self.lora_v_proj.weight.zero_()  # 初始化为0
+            self.lora_v_scaling = lora_alpha
+        else:
+            self.lora_v = None
+            self.lora_v_proj = None
+            self.lora_v_scaling = 1.0
 
         self._reset_parameters()
 
@@ -622,7 +686,16 @@ class MultiheadAttention(Module):
                 k_proj_weight=self.k_proj_weight,
                 v_proj_weight=self.v_proj_weight,
                 average_attn_weights=average_attn_weights,
-                is_causal=is_causal)
+                is_causal=is_causal,
+                lora_q=self.lora_q,
+                lora_q_proj=self.lora_q_proj,
+                lora_k=self.lora_k,
+                lora_k_proj=self.lora_k_proj,
+                lora_v=self.lora_v,
+                lora_v_proj=self.lora_v_proj,
+                lora_q_scaling=self.lora_q_scaling,
+                lora_k_scaling=self.lora_k_scaling,
+                lora_v_scaling=self.lora_v_scaling)
         else:
             attn_output, attn_output_weights = multi_head_attention_forward(
                 query,
@@ -643,7 +716,16 @@ class MultiheadAttention(Module):
                 need_weights=need_weights,
                 attn_mask=attn_mask,
                 average_attn_weights=average_attn_weights,
-                is_causal=is_causal)
+                is_causal=is_causal,
+                lora_q=self.lora_q,
+                lora_q_proj=self.lora_q_proj,
+                lora_k=self.lora_k,
+                lora_k_proj=self.lora_k_proj,
+                lora_v=self.lora_v,
+                lora_v_proj=self.lora_v_proj,
+                lora_q_scaling=self.lora_q_scaling,
+                lora_k_scaling=self.lora_k_scaling,
+                lora_v_scaling=self.lora_v_scaling)
         if self.batch_first and is_batched:
             return attn_output.transpose(1, 0), attn_output_weights
         else:

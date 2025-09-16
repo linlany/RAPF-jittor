@@ -1,6 +1,6 @@
 class_order: class_orders/imagenet100.yaml
 dataset_root: /defaultShare/pubdata/imagenet/
-workdir: ''
+workdir: /huanglinlan/jittor/RAPF-jittor/sup_code
 log_path: metrics.json
 model_name: ViT-B/16
 prompt_template: a good photo of a {}.
@@ -9,11 +9,16 @@ initial_increment: 10
 increment: ${initial_increment}
 scenario: class
 dataset: imagenet100
-method: RAPF
+method: MG-CLIP
+task_num: 10
+visual_clsf: true
+visual_clsf_lr: 0.001
+visual_clsf_batch_size: 128
+visual_clsf_epochs: 3
 num_workers: 16
 train_batch_size: 128
-epochs: 1
-lr: 0.001
+epochs: 2
+lr: 0.0005
 fp16: false
 seed: 2
 milestones:

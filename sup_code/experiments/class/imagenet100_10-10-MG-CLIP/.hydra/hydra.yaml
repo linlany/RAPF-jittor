@@ -1,6 +1,6 @@
 hydra:
   run:
-    dir: ./experiments/${scenario}/${dataset}_${initial_increment}-${increment}
+    dir: ./experiments/${scenario}/${dataset}_${initial_increment}-${increment}-${method}
   sweep:
     dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
     subdir: ${hydra.job.num}
@@ -120,7 +120,7 @@ hydra:
     override_dirname: class_order=class_orders/imagenet100.yaml,dataset_root=/defaultShare/pubdata/imagenet/
     id: ???
     num: ???
-    config_name: imagenet100_10-10.yaml
+    config_name: imagenet100_10-10MG.yaml
     env_set: {}
     env_copy: []
     config:
@@ -142,7 +142,7 @@ hydra:
     - path: ''
       schema: structured
       provider: schema
-    output_dir: /huanglinlan/jittor/RAPF-jittor/sup_code/experiments/class/imagenet100_10-10
+    output_dir: /huanglinlan/jittor/RAPF-jittor/sup_code/experiments/class/imagenet100_10-10-MG-CLIP
     choices:
       hydra/env: default
       hydra/callbacks: null

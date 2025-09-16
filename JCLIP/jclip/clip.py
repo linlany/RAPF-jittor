@@ -142,7 +142,7 @@ def available_models() -> List[str]:
     return list(_MODELS.keys())
 
 
-def load(name, download_root=None):
+def load(name, download_root=None, lora_q_r=0, lora_k_r=0, lora_v_r=0, lora_alpha=1.0):
     if name in _MODELS:
         model_path = _download(
             _MODELS[name], download_root
@@ -156,7 +156,7 @@ def load(name, download_root=None):
     # with open(model_path, 'rb') as opened_file:
     state_dict = jt.load(model_path)
 
-    model = build_model(state_dict)
+    model = build_model(state_dict, lora_q_r=lora_q_r, lora_k_r=lora_k_r, lora_v_r=lora_v_r, lora_alpha=lora_alpha)
     return model, _transform(model.visual.input_resolution)
 
 

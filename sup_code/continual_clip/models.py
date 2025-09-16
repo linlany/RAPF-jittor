@@ -56,8 +56,139 @@ def cdist_jittor(XA, XB):
     dist_matrix = jt.sqrt((diff * diff).sum(dim=2))
     return dist_matrix.squeeze()
 
+class VisionClassifier(nn.Module):
+    def __init__(self, in_features, num_classes, weight_init=None, activation=None):
+        super().__init__()
+        self.fc = nn.Linear(in_features, num_classes, bias=False)
+        self.fc = nn.Parameter(self.fc.weight)
+        if weight_init is not None:
+            self.fc.data = weight_init
+        if activation is not None:
+            self.activation = activation
+        else:
+            self.activation = nn.Identity()
+    
+    def add_weight(self, weight):
+        self.fc = nn.Parameter(jt.cat([self.fc, weight], dim=0))
+
+    def set_weight(self, weight):
+        self.fc = nn.Parameter(weight)
 
 
+    def execute(self, x):
+        # normalize the weights
+        x = x / x.norm(dim=-1, keepdim=True)
+        # weight = F.normalize(self.fc, p=2, dim=-1)
+        weight = self.fc / self.fc.norm(dim=-1, keepdim=True)
+        x = nn.linear(x, weight)
+        x = self.activation(x)
+        return x
+
+class LoRACLIP(nn.Module):
+    def __init__(self, cfg, device, jit=False):
+        super().__init__()
+        self.cfg = cfg
+        self.prompt_template = cfg.prompt_template
+        self.device = device
+        self.classes_names = None
+        # self.model, self.transforms = clip.load(cfg.model_name, device=device, jit=jit)
+
+
+        #lora_clip
+        # pdb.set_trace()
+        self.model, self.transforms = clip.load(name="/huanglinlan/jittor_CLIP/sup_code/ViT-B-16.pkl", lora_k_r=8, lora_v_r=8)
+        # for name, param in self.model.named_parameters():
+        #     if 'adapter_mlp' in name:
+        #         param.requires_grad = True
+        # for name, param in self.model.named_parameters():
+        #     if param.requires_grad:
+        #         print(f"Trainable: {name}")
+
+        self.class_ids_per_task = list(get_class_ids_per_task(cfg))
+        self.current_class_names = []
+        self.text_tokens = None
+        self.current_task = -1
+    
+
+    def cur_text_features(self):
+        f = self.model.encode_text(self.text_tokens)
+        f = f / f.norm(dim=1, keepdim=True)
+        return f
+
+    def inference(self, image, text_tokens):
+        text_features = self.model.encode_text(text_tokens)
+        image_features = self.model.visual(image.type(self.model.dtype), all_tokens=False, adapt=self.attention_adapter)
+        # pdb.set_trace()
+
+        # image_features = self.attention_adapter(image_features.type(torch.float32))[:, 0, :]
+
+        image_features = image_features / image_features.norm(dim=1, keepdim=True)
+        text_features = text_features / text_features.norm(dim=1, keepdim=True)
+
+        logit_scale = self.model.logit_scale.exp()
+        logits_per_image = logit_scale * image_features @ text_features.t()
+        return logits_per_image
+
+    def execute(self, image, test=False, all_test=False, return_feature=False,replay=None):
+        if test:
+            # pdb.set_trace()
+            with jt.no_grad():
+                if all_test:
+                    if return_feature:
+                        logits_per_image, _, image_features, __ = self.model(image, self.all_text_tokens, return_feature=return_feature)
+                    else:
+                        logits_per_image, _ = self.model(image, self.all_text_tokens)
+                    # logits_per_image = self.inference(image, self.all_text_tokens)
+                else:
+                    if return_feature:
+                        logits_per_image, _, image_features, __ = self.model(image, self.text_tokens, return_feature=return_feature)
+                    else:
+                        logits_per_image, _ = self.model(image, self.text_tokens)
+                # pdb.set_trace()
+                probs = logits_per_image.softmax(dim=-1)
+        else:
+
+            if return_feature:
+                __, _, image_features, text_features = self.model(image, self.text_tokens, return_feature=return_feature)
+                return image_features, text_features
+            if replay is not None:
+                logits_per_image, _ = self.model(image, self.text_tokens)
+                # text_features_for_replay = self.model.encode_text(self.text_tokens[:-self.cfg.increment])
+                text_features_for_replay = self.model.encode_text(self.text_tokens)
+                text_features_for_replay = text_features_for_replay / text_features_for_replay.norm(dim=1, keepdim=True)
+                replay_features = replay / replay.norm(dim=1, keepdim=True)
+                replay_logits = replay_features @ text_features_for_replay.t() * 100
+            else:
+                logits_per_image, _ = self.model(image, self.text_tokens)
+            probs = logits_per_image
+                
+        if return_feature:
+            text_features = self.model.encode_text(self.all_text_tokens)
+            return probs, image_features, text_features
+
+        if replay is not None:
+            return probs, replay_logits
+        return probs
+
+    def adaptation(self, task_id, reset=False):
+        self.current_task +=1
+            
+        self.current_task_class_names = get_class_names(self.classes_names, self.class_ids_per_task[task_id])
+        self.current_class_names += self.current_task_class_names
+        self.text_tokens = clip.tokenize(
+            [self.prompt_template.format(c) for c in self.current_class_names]
+        ).to(self.device)
+        self.current_task_text_tokens = clip.tokenize(
+            [self.prompt_template.format(c) for c in self.current_task_class_names]
+        ).to(self.device)
+        if self.current_task == 0:
+            class_names = []
+            for i in range(self.cfg.task_num):
+                class_names += get_class_names(self.classes_names, self.class_ids_per_task[i])
+            self.all_class_names = class_names
+            self.all_text_tokens = clip.tokenize(
+                [self.prompt_template.format(c) for c in self.all_class_names]
+            ).to(self.device)
 
 
 class ClassIncrementalCLIP(nn.Module):
@@ -268,7 +399,15 @@ def load_model(cfg: DictConfig, device) -> nn.Module:
         nn.Module: Return scenario specific CLIP model.
     """
     if cfg.scenario == "class":
-        return ClassIncrementalCLIP(cfg, device)
+        if cfg.method == "RAPF":
+            return ClassIncrementalCLIP(cfg, device)
+        elif cfg.method == "MG-CLIP":
+            return LoRACLIP(cfg, device)
+        else:
+            raise ValueError(f"""
+                `{cfg.method}` is not a valid method for class-incremental learning, 
+                Please choose from ['RAPF', 'MG-CLIP']
+            """)
     elif cfg.scenario == "domain":
         return DomainIncrementalCLIP(cfg, device)
     elif cfg.scenario == "task-aganostic":
